@@ -1,0 +1,73 @@
+{
+  "description": "S3 line travel times from Holzkirchen to Fasanenpark (direction West/Mammendorf)",
+  "direction": "west",
+  "unit": "seconds",
+  "last_updated": "2026-02-11T19:30:00",
+  "source": "Calculated from timetable API (train 8302)",
+  "stations": [
+    {
+      "name": "Holzkirchen",
+      "uic": "8002980",
+      "lat": 47.8844,
+      "lon": 11.6972,
+      "travel_time_to_next": 240,
+      "notes": "Start station"
+    },
+    {
+      "name": "Otterfing",
+      "uic": "8004726",
+      "lat": 47.9114,
+      "lon": 11.6821,
+      "travel_time_to_next": 300,
+      "notes": ""
+    },
+    {
+      "name": "Sauerlach",
+      "uic": "8005299",
+      "lat": 47.9741,
+      "lon": 11.6548,
+      "travel_time_to_next": 360,
+      "notes": ""
+    },
+    {
+      "name": "Deisenhofen",
+      "uic": "8001404",
+      "lat": 48.0195,
+      "lon": 11.5836,
+      "travel_time_to_next": 120,
+      "notes": ""
+    },
+    {
+      "name": "Furth",
+      "uic": "8002161",
+      "lat": 48.0355,
+      "lon": 11.5933,
+      "travel_time_to_next": 180,
+      "notes": "Full name: Furth(b Deisenhofen)"
+    },
+    {
+      "name": "Taufkirchen",
+      "uic": "8005831",
+      "lat": 48.0516,
+      "lon": 11.6093,
+      "travel_time_to_next": 120,
+      "notes": ""
+    },
+    {
+      "name": "Unterhaching",
+      "uic": "8005991",
+      "lat": 48.065,
+      "lon": 11.6124,
+      "travel_time_to_next": 120,
+      "notes": ""
+    },
+    {
+      "name": "Fasanenpark",
+      "uic": "8001963",
+      "lat": 48.0797,
+      "lon": 11.6094,
+      "travel_time_to_next": null,
+      "notes": "End station for our model - no travel time to next"
+    }
+  ]
+}
