@@ -12,8 +12,8 @@ Live train data is fetched from the [geops.io](https://geops.io) API (the same b
 geops.io API
      │  WebSocket
      ▼
- Raspberry Pi  ──TCP:8080──►  PSoC 6 AI Eval Kit   (model train)
- (sbahn.py)    ──TCP:8081──►  PSoC 6 WiFi BT Kit    (station display)
+ Raspberry Pi      ──TCP:8080──►  PSoC 6 AI Eval Kit   (model train)
+ (server/sbahn.py) ──TCP:8081──►  PSoC 6 WiFi BT Kit    (station display)
 ```
 
 The server tracks the next S3 train heading toward the city center. It resolves GPS coordinates and timetable data into commands (speed, loops, station name, ETA) that are sent to the microcontrollers over a plain-text TCP protocol.
@@ -61,21 +61,25 @@ The model train is powered through the rails (12 V DC), while the onboard microc
 ## Repository Structure
 
 ```
-sbahn.py                    # Active mode server (state machine)
-magnet_station_server.py    # Passive mode server (magnet stations)
-train_state_machine.py      # 6-state Moore machine
-tcp_model_output.py         # TCP server for model train MCU (port 8080)
-tcp_station_output.py       # TCP server for station display MCU (port 8081)
-outputs.py                  # Abstract output interfaces
-travel_times.json           # Station list and inter-station travel times
+server/
+  sbahn.py                    # Active mode server (state machine)
+  magnet_station_server.py    # Passive mode server (magnet stations)
+  train_state_machine.py      # 6-state Moore machine
+  tcp_model_output.py         # TCP server for model train MCU (port 8080)
+  tcp_station_output.py       # TCP server for station display MCU (port 8081)
+  outputs.py                  # Abstract output interfaces
+  simple_tcp_server.py        # Standalone TCP test harness (MCU development)
+  travel_times.json           # Station list and inter-station travel times
 
-micropython/
-  model_controller.py       # Flash to model train PSoC 6
-  station_controller.py     # Flash to station display PSoC 6
-  mp_i2c_lcd1602.py         # I²C LCD driver
-  wifi.py                   # WiFi connection helper
-  wifi_config.json          # WiFi credentials (edit before flashing)
-  server_config.json        # Server IP + port (edit before flashing)
+controller/
+  model_controller/
+    model_controller.py       # Flash to model train PSoC 6 (rename to main.py)
+  station_controller/
+    station_controller.py     # Flash to station display PSoC 6 (rename to main.py)
+    mp_i2c_lcd1602.py         # I²C LCD driver
+  wifi.py                     # WiFi connection helper
+  wifi_config.json            # WiFi credentials (edit before flashing)
+  server_config.json          # Server IP (edit before flashing)
 ```
 
 ---
@@ -97,13 +101,13 @@ pip install -r requirements.txt
 Run the active mode server:
 
 ```bash
-python sbahn.py
+python server/sbahn.py
 ```
 
 Or the passive mode server:
 
 ```bash
-python magnet_station_server.py
+python server/magnet_station_server.py
 ```
 
 > **Tip:** Assign a static IP address to the server in your router so the MCU config never needs updating.
@@ -119,28 +123,28 @@ Follow the [MicroPython for PSoC 6 guide](https://micropython.org) to flash Micr
 
 Edit the config files before copying:
 
-**`micropython/wifi_config.json`**
+**`controller/wifi_config.json`**
 ```json
 {"ssid": "YourNetwork", "password": "YourPassword"}
 ```
 
-**`micropython/server_config.json`**
+**`controller/server_config.json`**
 ```json
-{"host": "192.168.x.x", "port": 8080}
+{"server_ip": "192.168.x.x"}
 ```
 
 Copy to the **model train controller** (port 8080):
-- `model_controller.py` → rename to `main.py` on the device
-- `wifi.py`
-- `wifi_config.json`
-- `server_config.json`
+- `controller/model_controller/model_controller.py` → rename to `main.py` on the device
+- `controller/wifi.py`
+- `controller/wifi_config.json`
+- `controller/server_config.json`
 
 Copy to the **station display controller** (port 8081):
-- `station_controller.py` → rename to `main.py` on the device
-- `mp_i2c_lcd1602.py`
-- `wifi.py`
-- `wifi_config.json`
-- `server_config.json` (set port to `8081`)
+- `controller/station_controller/station_controller.py` → rename to `main.py` on the device
+- `controller/station_controller/mp_i2c_lcd1602.py`
+- `controller/wifi.py`
+- `controller/wifi_config.json`
+- `controller/server_config.json` (port 8081 is hardcoded in the firmware)
 
 ---
 
@@ -190,4 +194,4 @@ The server code is intentionally decoupled from the API layer. To track trains o
 
 ## License
 
-MIT
+[MIT](LICENSE)
