@@ -33,7 +33,7 @@ from tcp_station_output import TcpStationOutput, tcp_station_server
 WS_URL = "wss://api.geops.io/realtime-ws/v1/?key=5cc87b12d7c5370001c1d655112ec5c21e0f441792cfc2fafe3e7a1e"
 
 # Destinations we're looking for
-TARGET_DESTINATIONS = ["Mammendorf", "Maisach"]
+TARGET_DESTINATIONS = ["Mammendorf", "Maisach", "München-Giesing"]
 PING_TIMEOUT = 10  # seconds - if no PING received from geops.io, consider connection dead
 
 
