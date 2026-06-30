@@ -36,13 +36,16 @@ from tcp_model_output import TcpModelOutput, MODEL_TCP_PORT, PING_TIMEOUT as MOD
 from tcp_station_output import TcpStationOutput, STATION_TCP_PORT, PING_TIMEOUT as STATION_PING_TIMEOUT
 from sbahn import (
     WS_URL,
-    TARGET_DESTINATIONS,
     PING_TIMEOUT as WS_PING_TIMEOUT,
     load_stations,
     get_incoming_trains,
     pick_target_train,
     keep_alive,
     subscribe_bbox,
+)
+from virtual_train import (
+    FALLBACK_TIMEOUT,
+    virtual_train_for_magnet_mode,
 )
 
 # ── Configuration ───────────────────────────────────────────────────────
@@ -289,7 +292,7 @@ async def _track_one_train(
                 items = [data]
 
             for item in items:
-                trajectory = item.get("content") if source == "buffer" else item.get("content")
+                trajectory = item.get("content")
                 if not isinstance(trajectory, dict):
                     continue
 
@@ -371,14 +374,31 @@ async def train_tracker_loop(
     event, updates target_ref[0] and sets target_changed.  Completely
     independent of the model train.
     """
-    fasanenpark = next(s for s in stations if s["name"] == "Fasanenpark")
+    fasanenpark = next((s for s in stations if s["name"] == "Fasanenpark"), None)
+    if fasanenpark is None:
+        raise RuntimeError("'Fasanenpark' not found in travel_times.json — cannot determine UIC")
     uic: str = fasanenpark["uic"]
+    station_names = [s["name"] for s in stations]
     print(f"📍 [Tracker] Fasanenpark UIC: {uic}")
     last_scheduled_ms: float = 0
+
+    # ── Fallback state (survives WebSocket reconnections) ─────────────
+    _offline_since: float | None = None
+    _fallback_task: asyncio.Task | None = None
+    _stop_fallback: asyncio.Event = asyncio.Event()
 
     while True:  # reconnection loop
         try:
             async with websockets.connect(WS_URL, max_size=10 * 1024 * 1024) as ws:
+                # Connection (re-)established — stop virtual fallback if running.
+                if _fallback_task is not None and not _fallback_task.done():
+                    print("🌐 [Tracker] API connection restored — stopping virtual train fallback")
+                    _stop_fallback.set()
+                    await asyncio.gather(_fallback_task, return_exceptions=True)
+                    _fallback_task = None
+                _stop_fallback.clear()
+                _offline_since = None
+
                 print("🔌 [Tracker] Connected to geops.io WebSocket")
                 keepalive = asyncio.create_task(keep_alive(ws))
                 try:
@@ -393,11 +413,11 @@ async def train_tracker_loop(
 
                         print(f"\n📋 Timetable ({len(trains)} trains):")
                         for t in trains:
-                            marker = "→" if any(d in t["destination"] for d in TARGET_DESTINATIONS) else " "
+                            marker = "→" if not any(s in t["destination"] for s in station_names) else " "
                             skip = " (skipping)" if t["timestamp"] <= last_scheduled_ms else ""
                             print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}{skip}")
 
-                        train_number = pick_target_train(trains, exclude_before_ms=last_scheduled_ms)
+                        train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                         if not train_number:
                             print("⏳ [Tracker] No suitable train in next 30 min, retrying in 60s...")
                             await asyncio.sleep(60)
@@ -434,12 +454,45 @@ async def train_tracker_loop(
 
         except websockets.exceptions.ConnectionClosed as e:
             print(f"\n🔌 [Tracker] WS closed ({e}). Reconnecting in 5s...")
+            _offline_since = _offline_since or time.time()
+            offline_s = time.time() - _offline_since
+            if (_fallback_task is None or _fallback_task.done()) and \
+                    offline_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] API offline for {offline_s:.0f}s "
+                      f"— activating virtual train fallback")
+                _stop_fallback.clear()
+                _fallback_task = asyncio.create_task(
+                    virtual_train_for_magnet_mode(
+                        station_to_magnet, stations, target_ref, target_changed,
+                        station_out, _stop_fallback))
             await asyncio.sleep(5)
         except websockets.exceptions.InvalidStatus as e:
             print(f"\n🔌 [Tracker] WS rejected ({e}). Reconnecting in 10s...")
+            _offline_since = _offline_since or time.time()
+            offline_s = time.time() - _offline_since
+            if (_fallback_task is None or _fallback_task.done()) and \
+                    offline_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] API offline for {offline_s:.0f}s "
+                      f"— activating virtual train fallback")
+                _stop_fallback.clear()
+                _fallback_task = asyncio.create_task(
+                    virtual_train_for_magnet_mode(
+                        station_to_magnet, stations, target_ref, target_changed,
+                        station_out, _stop_fallback))
             await asyncio.sleep(10)
         except OSError as e:
             print(f"\n🔌 [Tracker] Network error ({e}). Reconnecting in 10s...")
+            _offline_since = _offline_since or time.time()
+            offline_s = time.time() - _offline_since
+            if (_fallback_task is None or _fallback_task.done()) and \
+                    offline_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] API offline for {offline_s:.0f}s "
+                      f"— activating virtual train fallback")
+                _stop_fallback.clear()
+                _fallback_task = asyncio.create_task(
+                    virtual_train_for_magnet_mode(
+                        station_to_magnet, stations, target_ref, target_changed,
+                        station_out, _stop_fallback))
             await asyncio.sleep(10)
 
 
@@ -541,6 +594,7 @@ async def stdin_listener(restart_event: asyncio.Event, status_fn):
 async def main():
     """Main entry point for magnet-station mode."""
     stations = load_stations()
+    station_names = [s["name"] for s in stations]
     print(f"📋 Loaded {len(stations)} stations from travel_times.json")
 
     station_to_magnet = build_station_to_magnet(stations)

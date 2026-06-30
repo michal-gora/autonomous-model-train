@@ -29,11 +29,13 @@ from train_state_machine import TrainStateMachine, State
 from outputs import PrintModelOutput, PrintStationOutput
 from tcp_model_output import TcpModelOutput, tcp_model_server
 from tcp_station_output import TcpStationOutput, tcp_station_server
+from virtual_train import (
+    FALLBACK_TIMEOUT,
+    virtual_train_for_state_machine,
+)
 
 WS_URL = "wss://api.geops.io/realtime-ws/v1/?key=5cc87b12d7c5370001c1d655112ec5c21e0f441792cfc2fafe3e7a1e"
 
-# Destinations we're looking for
-TARGET_DESTINATIONS = ["Mammendorf", "Maisach", "München-Giesing", "München Donnersbergerbrücke"]
 PING_TIMEOUT = 10  # seconds - if no PING received from geops.io, consider connection dead
 
 
@@ -54,8 +56,8 @@ async def get_station_uic(ws, station_name: str) -> str | None:
             async for msg in ws:
                 data = json.loads(msg)
                 if data.get("source") == "station":
-                    content = data.get("content", {})
-                    props = content.get("properties", {})
+                    content = data.get("content") or {}
+                    props = content.get("properties") or {}
                     name = props.get("name", "")
                     uic = props.get("uic")
                     network = props.get("networkLines")
@@ -76,17 +78,18 @@ async def get_incoming_trains(ws, uic: str, max_trains: int = 100) -> list:
             async for msg in ws:
                 data = json.loads(msg)
                 if data.get("source", "").startswith("timetable_"):
-                    content = data.get("content", {})
+                    content = data.get("content") or {}
                     train_number = content.get("train_number")
                     destination = (content.get("to") or ["Unknown"])[0]
                     aimed_ms = content.get("aimedDepartureTime") or content.get("time", 0)
                     estimated_ms = content.get("departureTime") or aimed_ms
-                    time_str = datetime.fromtimestamp(aimed_ms / 1000).strftime("%H:%M")
                     state = content.get("state")
 
-                    # Filter out trains that are clearly not running (CANCELLED state if it exists)
-                    if state == "CANCELLED":
+                    # Skip entries with no usable departure time or cancelled trains
+                    if not aimed_ms or state == "CANCELLED":
                         continue
+
+                    time_str = datetime.fromtimestamp(aimed_ms / 1000).strftime("%H:%M")
 
                     trains.append({
                         "number": train_number,
@@ -105,11 +108,13 @@ async def get_incoming_trains(ws, uic: str, max_trains: int = 100) -> list:
     return trains
 
 
-def pick_target_train(trains: list, exclude_before_ms: float = 0) -> int | None:
-    """Pick first train going to one of our target destinations in the next 30 minutes.
+def pick_target_train(trains: list, station_names: list, exclude_before_ms: float = 0) -> int | None:
+    """Pick first westbound train (destination not in our station list) in the next 30 minutes.
     
     Args:
         trains:           Timetable list from get_incoming_trains().
+        station_names:    List of station names from travel_times.json. Trains whose
+                          destination matches one of these are eastbound and skipped.
         exclude_before_ms: Skip trains whose scheduled timestamp is <= this value.
                           Pass the scheduled_ms of the last tracked train so stale
                           timetable entries for already-passed trains are ignored,
@@ -132,7 +137,8 @@ def pick_target_train(trains: list, exclude_before_ms: float = 0) -> int | None:
         if timestamp < now_ms or timestamp > max_future_ms:
             continue
 
-        if any(d in dest for d in TARGET_DESTINATIONS):
+        # Westbound: destination is not one of our known stations
+        if not any(s in dest for s in station_names):
             print(f"🎯 Selected: Train {number} → {dest} @ {t['time']}")
             return number
     return None
@@ -309,6 +315,7 @@ async def main():
     """Main entry point: connect, find train, run state machine."""
     # Load station data
     stations = load_stations()
+    station_names = [s["name"] for s in stations]
     print(f"📋 Loaded {len(stations)} stations from travel_times.json")
     for i, st in enumerate(stations):
         tt = st.get("travel_time_to_next")
@@ -342,10 +349,24 @@ async def main():
     uic: str = fasanenpark["uic"]
     print(f"📍 Fasanenpark UIC: {uic} (from travel_times.json)\n")
 
+    # ── Fallback state (survives WebSocket reconnections) ─────────────
+    _offline_since: float | None = None
+    _fallback_task: asyncio.Task | None = None
+    _stop_fallback: asyncio.Event = asyncio.Event()
+
     try:
         while True:  # reconnection loop
             try:
                 async with websockets.connect(WS_URL, max_size=10 * 1024 * 1024) as ws:
+                    # Connection (re-)established — stop virtual fallback if running.
+                    if _fallback_task is not None and not _fallback_task.done():
+                        print("🌐 API connection restored — stopping virtual train fallback")
+                        _stop_fallback.set()
+                        await asyncio.gather(_fallback_task, return_exceptions=True)
+                        _fallback_task = None
+                    _stop_fallback.clear()
+                    _offline_since = None
+
                     print("🔌 Connected to geops.io WebSocket\n")
                     keepalive_task = asyncio.create_task(keep_alive(ws))
                     try:
@@ -395,11 +416,11 @@ async def main():
 
                             print(f"\n📋 Timetable ({len(trains)} trains):")
                             for t in trains:
-                                marker = "→" if any(d in t["destination"] for d in TARGET_DESTINATIONS) else " "
+                                marker = "→" if not any(s in t["destination"] for s in station_names) else " "
                                 skip = " (already passed, skipping)" if t["timestamp"] <= last_scheduled_ms else ""
                                 print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}{skip}")
 
-                            train_number = pick_target_train(trains, exclude_before_ms=last_scheduled_ms)
+                            train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                             if not train_number:
                                 print(f"⏳ No suitable train in the next 30 minutes, retrying in 60s...")
                                 await asyncio.sleep(60)
@@ -437,15 +458,36 @@ async def main():
 
             except websockets.exceptions.ConnectionClosed as e:
                 print(f"\n🔌 WebSocket connection closed ({e}). Reconnecting in 5s...")
+                _offline_since = _offline_since or time.time()
+                offline_s = time.time() - _offline_since
+                if (_fallback_task is None or _fallback_task.done()) and \
+                        offline_s >= FALLBACK_TIMEOUT:
+                    print(f"⚠️  API offline for {offline_s:.0f}s "
+                          f"— activating virtual train fallback")
+                    _stop_fallback.clear()
+                    _fallback_task = asyncio.create_task(
+                        virtual_train_for_state_machine(sm, stations, _stop_fallback))
                 await asyncio.sleep(5)
             except OSError as e:
                 print(f"\n🔌 Network error ({e}). Reconnecting in 10s...")
+                _offline_since = _offline_since or time.time()
+                offline_s = time.time() - _offline_since
+                if (_fallback_task is None or _fallback_task.done()) and \
+                        offline_s >= FALLBACK_TIMEOUT:
+                    print(f"⚠️  API offline for {offline_s:.0f}s "
+                          f"— activating virtual train fallback")
+                    _stop_fallback.clear()
+                    _fallback_task = asyncio.create_task(
+                        virtual_train_for_state_machine(sm, stations, _stop_fallback))
                 await asyncio.sleep(10)
 
     except KeyboardInterrupt:
         print("\n👋 Stopped by user")
     finally:
         stdin_task.cancel()
+        if _fallback_task is not None and not _fallback_task.done():
+            _stop_fallback.set()
+            _fallback_task.cancel()
 
     print(f"\n📊 Final: {sm.status()}")
 
