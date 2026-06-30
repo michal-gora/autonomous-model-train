@@ -122,7 +122,7 @@ def pick_target_train(trains: list, station_names: list, exclude_before_ms: floa
     """
     import time
     now_ms = time.time() * 1000
-    max_future_ms = now_ms + (30 * 60 * 1000)  # 30 minutes from now
+    max_future_ms = now_ms + (60 * 60 * 1000)  # 60 minutes from now
 
     for t in trains:
         dest = t.get("destination", "")
@@ -131,16 +131,23 @@ def pick_target_train(trains: list, station_names: list, exclude_before_ms: floa
 
         # Skip trains at or before the last tracked train's scheduled slot
         if timestamp <= exclude_before_ms:
+            print(f"   ⏭  Train {number} → {dest}: excluded (already tracked, ts={timestamp} <= {exclude_before_ms})")
             continue
 
-        # Only consider trains departing in the next 30 minutes
-        if timestamp < now_ms or timestamp > max_future_ms:
+        # Only consider trains departing in the next 60 minutes
+        if timestamp < now_ms:
+            print(f"   ⏭  Train {number} → {dest}: excluded (in the past, ts={timestamp} < now={now_ms:.0f})")
+            continue
+        if timestamp > max_future_ms:
+            print(f"   ⏭  Train {number} → {dest}: excluded (too far, {(timestamp - now_ms)/60000:.1f} min away)")
             continue
 
         # Westbound: destination is not one of our known stations
         if not any(s in dest for s in station_names):
             print(f"🎯 Selected: Train {number} → {dest} @ {t['time']}")
             return number
+        else:
+            print(f"   ⏭  Train {number} → {dest}: excluded (destination in known station list)")
     return None
 
 
