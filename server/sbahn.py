@@ -357,7 +357,8 @@ async def main():
     print(f"📍 Fasanenpark UIC: {uic} (from travel_times.json)\n")
 
     # ── Fallback state (survives WebSocket reconnections) ─────────────
-    _offline_since: float | None = None
+    # Cleared only when real tracking starts; never reset on mere reconnect.
+    _no_data_since: float | None = None
     _fallback_task: asyncio.Task | None = None
     _stop_fallback: asyncio.Event = asyncio.Event()
 
@@ -372,7 +373,9 @@ async def main():
                         await asyncio.gather(_fallback_task, return_exceptions=True)
                         _fallback_task = None
                     _stop_fallback.clear()
-                    _offline_since = None
+                    # Note: _no_data_since is intentionally NOT cleared here.
+                    # The clock keeps ticking; if the API reconnects but still has
+                    # no trains, the fallback will restart on the first failed query.
 
                     print("🔌 Connected to geops.io WebSocket\n")
                     keepalive_task = asyncio.create_task(keep_alive(ws))
@@ -418,6 +421,15 @@ async def main():
                             trains = await get_incoming_trains(ws, uic)
                             if not trains:
                                 print("❌ No trains found in timetable, retrying in 30s...")
+                                _no_data_since = _no_data_since or time.time()
+                                no_data_s = time.time() - _no_data_since
+                                if (_fallback_task is None or _fallback_task.done()) and \
+                                        no_data_s >= FALLBACK_TIMEOUT:
+                                    print(f"⚠️  No trains for {no_data_s:.0f}s "
+                                          f"— activating virtual train fallback")
+                                    _stop_fallback.clear()
+                                    _fallback_task = asyncio.create_task(
+                                        virtual_train_for_state_machine(sm, stations, _stop_fallback))
                                 try:
                                     async with asyncio.timeout(30):
                                         async for _ in ws:
@@ -435,6 +447,15 @@ async def main():
                             train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                             if not train_number:
                                 print(f"⏳ No suitable train in the next 30 minutes, retrying in 60s...")
+                                _no_data_since = _no_data_since or time.time()
+                                no_data_s = time.time() - _no_data_since
+                                if (_fallback_task is None or _fallback_task.done()) and \
+                                        no_data_s >= FALLBACK_TIMEOUT:
+                                    print(f"⚠️  No trains for {no_data_s:.0f}s "
+                                          f"— activating virtual train fallback")
+                                    _stop_fallback.clear()
+                                    _fallback_task = asyncio.create_task(
+                                        virtual_train_for_state_machine(sm, stations, _stop_fallback))
                                 try:
                                     async with asyncio.timeout(60):
                                         async for _ in ws:
@@ -442,6 +463,15 @@ async def main():
                                 except asyncio.TimeoutError:
                                     pass
                                 continue
+
+                            # Real train found — stop virtual fallback if running.
+                            if _fallback_task is not None and not _fallback_task.done():
+                                print("🚆 Real train found — stopping virtual train fallback")
+                                _stop_fallback.set()
+                                await asyncio.gather(_fallback_task, return_exceptions=True)
+                                _fallback_task = None
+                            _stop_fallback.clear()
+                            _no_data_since = None
 
                             print(f"\n{'='*60}")
                             print(f"  TRACKING TRAIN {train_number}")
@@ -475,11 +505,11 @@ async def main():
 
             except websockets.exceptions.ConnectionClosed as e:
                 print(f"\n🔌 WebSocket connection closed ({e}). Reconnecting in 5s...")
-                _offline_since = _offline_since or time.time()
-                offline_s = time.time() - _offline_since
+                _no_data_since = _no_data_since or time.time()
+                no_data_s = time.time() - _no_data_since
                 if (_fallback_task is None or _fallback_task.done()) and \
-                        offline_s >= FALLBACK_TIMEOUT:
-                    print(f"⚠️  API offline for {offline_s:.0f}s "
+                        no_data_s >= FALLBACK_TIMEOUT:
+                    print(f"⚠️  No real train for {no_data_s:.0f}s "
                           f"— activating virtual train fallback")
                     _stop_fallback.clear()
                     _fallback_task = asyncio.create_task(
@@ -487,11 +517,11 @@ async def main():
                 await asyncio.sleep(5)
             except OSError as e:
                 print(f"\n🔌 Network error ({e}). Reconnecting in 10s...")
-                _offline_since = _offline_since or time.time()
-                offline_s = time.time() - _offline_since
+                _no_data_since = _no_data_since or time.time()
+                no_data_s = time.time() - _no_data_since
                 if (_fallback_task is None or _fallback_task.done()) and \
-                        offline_s >= FALLBACK_TIMEOUT:
-                    print(f"⚠️  API offline for {offline_s:.0f}s "
+                        no_data_s >= FALLBACK_TIMEOUT:
+                    print(f"⚠️  No real train for {no_data_s:.0f}s "
                           f"— activating virtual train fallback")
                     _stop_fallback.clear()
                     _fallback_task = asyncio.create_task(
