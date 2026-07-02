@@ -418,7 +418,12 @@ async def main():
                             trains = await get_incoming_trains(ws, uic)
                             if not trains:
                                 print("❌ No trains found in timetable, retrying in 30s...")
-                                await asyncio.sleep(30)
+                                try:
+                                    async with asyncio.timeout(30):
+                                        async for _ in ws:
+                                            pass  # drain BBOX messages to keep buffer clear
+                                except asyncio.TimeoutError:
+                                    pass
                                 continue
 
                             print(f"\n📋 Timetable ({len(trains)} trains):")
@@ -430,7 +435,12 @@ async def main():
                             train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                             if not train_number:
                                 print(f"⏳ No suitable train in the next 30 minutes, retrying in 60s...")
-                                await asyncio.sleep(60)
+                                try:
+                                    async with asyncio.timeout(60):
+                                        async for _ in ws:
+                                            pass  # drain BBOX messages to keep buffer clear
+                                except asyncio.TimeoutError:
+                                    pass
                                 continue
 
                             print(f"\n{'='*60}")
