@@ -385,6 +385,7 @@ async def train_tracker_loop(
     # ── Fallback state (survives WebSocket reconnections) ─────────────
     # Cleared only when real tracking starts; never reset on mere reconnect.
     _no_data_since: float | None = None
+    _no_trains_since: float | None = None
     _fallback_task: asyncio.Task | None = None
     _stop_fallback: asyncio.Event = asyncio.Event()
 
@@ -430,6 +431,7 @@ async def train_tracker_loop(
                                 pass
                             continue
 
+                        _no_trains_since = None
                         print(f"\n📋 Timetable ({len(trains)} trains):")
                         for t in trains:
                             marker = "→" if not any(s in t["destination"] for s in station_names) else " "
