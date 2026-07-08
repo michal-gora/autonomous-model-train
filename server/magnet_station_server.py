@@ -383,15 +383,13 @@ async def train_tracker_loop(
     last_scheduled_ms: float = 0
 
     # ── Fallback state (survives WebSocket reconnections) ─────────────
-    # Cleared only when real tracking starts; never reset on mere reconnect.
-    _no_data_since: float | None = None
-    _no_trains_since: float | None = None
-    # Tracks time since the last SUCCESSFUL train completion. Unlike
-    # _no_data_since/_no_trains_since (which only advance while trains/train_number
-    # are absent from the timetable), this covers the case where a train is
-    # found and (re-)selected every cycle but keeps aborting (e.g. the API stops
-    # sending live position updates for it) — without this, fallback would never
-    # trigger because the "no trains"/"no suitable train" branches are never hit.
+    # Cleared only on a genuine full-cycle success; never reset on mere reconnect,
+    # and NOT reset just because trains/a candidate were found — being found is
+    # not the same as making progress (e.g. a train can be re-selected every
+    # cycle yet keep aborting because the API stops sending its live position).
+    # A single shared timer (rather than one per failure mode) ensures the
+    # fallback still triggers even if the specific failure reason changes
+    # between cycles (no trains → no candidate → aborted train, etc.).
     _no_progress_since: float | None = None
     _fallback_task: asyncio.Task | None = None
     _stop_fallback: asyncio.Event = asyncio.Event()
@@ -406,7 +404,7 @@ async def train_tracker_loop(
                     await asyncio.gather(_fallback_task, return_exceptions=True)
                     _fallback_task = None
                 _stop_fallback.clear()
-                # Note: _no_data_since is intentionally NOT cleared here.
+                # Note: _no_progress_since is intentionally NOT cleared here.
                 # The clock keeps ticking; if the API reconnects but still has
                 # no trains, the fallback will restart on the first failed query.
 
@@ -419,11 +417,11 @@ async def train_tracker_loop(
                         trains = await get_incoming_trains(ws, uic)
                         if not trains:
                             print("❌ [Tracker] No trains found, retrying in 30s...")
-                            _no_trains_since = _no_trains_since or time.time()
-                            no_trains_s = time.time() - _no_trains_since
+                            _no_progress_since = _no_progress_since or time.time()
+                            no_progress_s = time.time() - _no_progress_since
                             if (_fallback_task is None or _fallback_task.done()) and \
-                                    no_trains_s >= FALLBACK_TIMEOUT:
-                                print(f"⚠️  [Tracker] No trains for {no_trains_s:.0f}s "
+                                    no_progress_s >= FALLBACK_TIMEOUT:
+                                print(f"⚠️  [Tracker] No trains for {no_progress_s:.0f}s "
                                       f"— activating virtual train fallback")
                                 _stop_fallback.clear()
                                 _fallback_task = asyncio.create_task(
@@ -438,7 +436,6 @@ async def train_tracker_loop(
                                 pass
                             continue
 
-                        _no_trains_since = None
                         print(f"\n📋 Timetable ({len(trains)} trains):")
                         for t in trains:
                             marker = "→" if not any(s in t["destination"] for s in station_names) else " "
@@ -448,11 +445,11 @@ async def train_tracker_loop(
                         train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                         if not train_number:
                             print("⏳ [Tracker] No suitable train in next 30 min, retrying in 60s...")
-                            _no_data_since = _no_data_since or time.time()
-                            no_data_s = time.time() - _no_data_since
+                            _no_progress_since = _no_progress_since or time.time()
+                            no_progress_s = time.time() - _no_progress_since
                             if (_fallback_task is None or _fallback_task.done()) and \
-                                    no_data_s >= FALLBACK_TIMEOUT:
-                                print(f"⚠️  [Tracker] No trains for {no_data_s:.0f}s "
+                                    no_progress_s >= FALLBACK_TIMEOUT:
+                                print(f"⚠️  [Tracker] No trains for {no_progress_s:.0f}s "
                                       f"— activating virtual train fallback")
                                 _stop_fallback.clear()
                                 _fallback_task = asyncio.create_task(
@@ -477,7 +474,6 @@ async def train_tracker_loop(
                             await asyncio.gather(_fallback_task, return_exceptions=True)
                             _fallback_task = None
                         _stop_fallback.clear()
-                        _no_data_since = None
 
                         print(f"\n{'='*60}")
                         print(f"  [Tracker] TRACKING TRAIN {train_number}")
@@ -526,11 +522,11 @@ async def train_tracker_loop(
 
         except websockets.exceptions.ConnectionClosed as e:
             print(f"\n🔌 [Tracker] WS closed ({e}). Reconnecting in 5s...")
-            _no_data_since = _no_data_since or time.time()
-            no_data_s = time.time() - _no_data_since
+            _no_progress_since = _no_progress_since or time.time()
+            no_progress_s = time.time() - _no_progress_since
             if (_fallback_task is None or _fallback_task.done()) and \
-                    no_data_s >= FALLBACK_TIMEOUT:
-                print(f"⚠️  [Tracker] No real train for {no_data_s:.0f}s "
+                    no_progress_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] No real train for {no_progress_s:.0f}s "
                       f"— activating virtual train fallback")
                 _stop_fallback.clear()
                 _fallback_task = asyncio.create_task(
@@ -540,11 +536,11 @@ async def train_tracker_loop(
             await asyncio.sleep(5)
         except websockets.exceptions.InvalidStatus as e:
             print(f"\n🔌 [Tracker] WS rejected ({e}). Reconnecting in 10s...")
-            _no_data_since = _no_data_since or time.time()
-            no_data_s = time.time() - _no_data_since
+            _no_progress_since = _no_progress_since or time.time()
+            no_progress_s = time.time() - _no_progress_since
             if (_fallback_task is None or _fallback_task.done()) and \
-                    no_data_s >= FALLBACK_TIMEOUT:
-                print(f"⚠️  [Tracker] No real train for {no_data_s:.0f}s "
+                    no_progress_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] No real train for {no_progress_s:.0f}s "
                       f"— activating virtual train fallback")
                 _stop_fallback.clear()
                 _fallback_task = asyncio.create_task(
@@ -554,11 +550,11 @@ async def train_tracker_loop(
             await asyncio.sleep(10)
         except OSError as e:
             print(f"\n🔌 [Tracker] Network error ({e}). Reconnecting in 10s...")
-            _no_data_since = _no_data_since or time.time()
-            no_data_s = time.time() - _no_data_since
+            _no_progress_since = _no_progress_since or time.time()
+            no_progress_s = time.time() - _no_progress_since
             if (_fallback_task is None or _fallback_task.done()) and \
-                    no_data_s >= FALLBACK_TIMEOUT:
-                print(f"⚠️  [Tracker] No real train for {no_data_s:.0f}s "
+                    no_progress_s >= FALLBACK_TIMEOUT:
+                print(f"⚠️  [Tracker] No real train for {no_progress_s:.0f}s "
                       f"— activating virtual train fallback")
                 _stop_fallback.clear()
                 _fallback_task = asyncio.create_task(
