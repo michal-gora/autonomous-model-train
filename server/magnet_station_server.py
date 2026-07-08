@@ -386,6 +386,13 @@ async def train_tracker_loop(
     # Cleared only when real tracking starts; never reset on mere reconnect.
     _no_data_since: float | None = None
     _no_trains_since: float | None = None
+    # Tracks time since the last SUCCESSFUL train completion. Unlike
+    # _no_data_since/_no_trains_since (which only advance while trains/train_number
+    # are absent from the timetable), this covers the case where a train is
+    # found and (re-)selected every cycle but keeps aborting (e.g. the API stops
+    # sending live position updates for it) — without this, fallback would never
+    # trigger because the "no trains"/"no suitable train" branches are never hit.
+    _no_progress_since: float | None = None
     _fallback_task: asyncio.Task | None = None
     _stop_fallback: asyncio.Event = asyncio.Event()
 
@@ -487,9 +494,28 @@ async def train_tracker_loop(
 
                         if completed:
                             last_scheduled_ms = scheduled_ms
+                            _no_progress_since = None
                             print(f"\n✅ [Tracker] Train {train_number} done — searching next")
                         else:
                             print(f"⚠️  [Tracker] Aborted train {train_number} — will retry")
+                            _no_progress_since = _no_progress_since or time.time()
+                            no_progress_s = time.time() - _no_progress_since
+                            if no_progress_s >= FALLBACK_TIMEOUT:
+                                # Give up on this specific train too — it keeps getting
+                                # re-selected (last_scheduled_ms never advanced on abort) and
+                                # is preventing us from ever trying a different candidate. Skip
+                                # it going forward so the next cycle can pick another train, and
+                                # so we stop repeatedly starting/stopping the virtual fallback on
+                                # a train that will never deliver data.
+                                last_scheduled_ms = scheduled_ms
+                                if _fallback_task is None or _fallback_task.done():
+                                    print(f"⚠️  [Tracker] No successful train tracking for {no_progress_s:.0f}s "
+                                          f"— activating virtual train fallback and skipping train {train_number}")
+                                    _stop_fallback.clear()
+                                    _fallback_task = asyncio.create_task(
+                                        virtual_train_for_magnet_mode(
+                                            station_to_magnet, stations, target_ref, target_changed,
+                                            station_out, _stop_fallback))
 
                 finally:
                     keepalive.cancel()
