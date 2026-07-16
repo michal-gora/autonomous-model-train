@@ -52,9 +52,7 @@ def display_clear(arg: int = -1):
     if arg == 0:
         LCD.puts(" " * 16, y=0)
     elif arg == 1:
-        LCD.puts(" " * 15, y=1)
-    elif arg == 2:
-        LCD.puts(" ", x=15, y=1)
+        LCD.puts(" " * 16, y=1)
     else:
         LCD.clear()
     print("Display: clear")
@@ -63,15 +61,13 @@ def display_text(line: str, arg : int = 0):
     """Show text on the display. line1 = top row, line2 = bottom row.
     Args:
         line: The text to display (will be truncated to fit).
-        arg: Which element to update (0 = top row, 1 = bottom row, 2 = status indicator bottom right)
+        arg: Which row to update (0 = top row, 1 = bottom row)
     """
     display_clear(arg)
     if arg == 0:
         LCD.puts(f"{line.strip()[:16]}", y=0)
     elif arg == 1:
-        LCD.puts(f"{line.strip()[:15]}", y=1)
-    elif arg == 2:
-        LCD.puts(line.strip()[:1], x=15, y=1)
+        LCD.puts(f"{line.strip()[:16]}", y=1)
     print(f"Display: [{line}] with arg={arg}")
 
 def display_eta(remaining_seconds: int):
@@ -105,6 +101,10 @@ def start_socket_client():
     eta_unix: int | None = None
     last_eta_display: int = 0    # raw ticks_ms() value
     ETA_DISPLAY_INTERVAL = 10
+    # Tracks what last wrote to the bottom row (arg=1): "eta" or "custom".
+    # While a custom message occupies the bottom row, the periodic ETA display
+    # is suppressed until a fresh ETA message arrives from the server.
+    bottom_row_source: str = "eta"
 
     while True:
         # Connection/reconnection loop
@@ -218,10 +218,6 @@ def start_socket_client():
                         station_name = parts[1]
                         state = parts[2]
                         display_text(station_name, 0)
-                        if state == "AT_STATION_VALID" or state == "RUNNING_TO_STATION":
-                            display_text("B", 2)
-                        else:
-                            display_text(" ", 2)  # clear status indicator
                     else:
                         print(f"Unknown STATION format: {line_str}")
 
@@ -229,6 +225,7 @@ def start_socket_client():
                     # ETA:<unix_timestamp>  → absolute arrival time at Fasanenpark
                     # ETA:none              → no tracked train, no ETA
                     value = line_str[4:]  # strip "ETA:"
+                    bottom_row_source = "eta"  # fresh ETA message resumes periodic display
                     if value == "none":
                         eta_unix = None
                         print("ETA: none")
@@ -240,19 +237,41 @@ def start_socket_client():
                             print(f"Invalid ETA value: {value}")
                             eta_unix = None
 
+                elif line_str.startswith("MSG:"):
+                    # MSG:<line>:<text>  → write arbitrary text directly to the display
+                    #   line = 0 (top row) | 1 (bottom row)
+                    # Text is stripped/truncated to fit by display_text().
+                    parts = line_str.split(":", 2)
+                    if len(parts) == 3:
+                        try:
+                            msg_line = int(parts[1])
+                        except ValueError:
+                            print(f"Invalid MSG line: {parts[1]}")
+                            msg_line = None
+                        if msg_line in (0, 1):
+                            display_text(parts[2], msg_line)
+                            if msg_line == 1:
+                                bottom_row_source = "custom"
+                        else:
+                            print(f"Unknown MSG line: {parts[1]}")
+                    else:
+                        print(f"Unknown MSG format: {line_str}")
+
                 elif line_str == "ACK":
                     display_text("Connected")
                     print("Successfully connected")
                 # Ignore unknown messages silently (could be ACK or other server messages)
 
-            # Periodically display remaining ETA
+            # Periodically display remaining ETA — but don't clobber a manually
+            # written message on the bottom row until a fresh ETA message arrives.
             now = time.time()
-            if eta_unix is not None and now - last_eta_display >= ETA_DISPLAY_INTERVAL:
-                remaining = eta_unix - unix_time()
-                display_eta(remaining)
-                last_eta_display = now
-            elif eta_unix is None:
-                display_clear(1)  # clear ETA line if no train tracked
+            if bottom_row_source == "eta":
+                if eta_unix is not None and now - last_eta_display >= ETA_DISPLAY_INTERVAL:
+                    remaining = eta_unix - unix_time()
+                    display_eta(remaining)
+                    last_eta_display = now
+                elif eta_unix is None:
+                    display_clear(1)  # clear ETA line if no train tracked
         except OSError as e:
             code = e.args[0]
             if code == errno.ECONNRESET:

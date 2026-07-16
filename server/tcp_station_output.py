@@ -6,6 +6,7 @@ on PSoC 6) connects as a TCP client. Messages are newline-terminated text.
 
 Protocol:
     Server → Station:  STATION:name:STATE\n  (STATE = AT_STATION_VALID | AT_STATION_WAITING | DRIVING | RUNNING_TO_STATION)  |   STATION:clear\n
+    Server → Station:  MSG:<line>:<text>\n  (line = 0 top row | 1 bottom row) — writes arbitrary text directly to the display
     Station → Server:  HELLO:STATION\n  |   PING\n
     Server → Station:  ACK\n  (after HELLO)  |   PONG\n  (after PING)
 """
@@ -86,6 +87,15 @@ class TcpStationOutput(StationOutput):
         self._last_station_message = "STATION:clear\n"
         self._write(self._last_station_message)
         print(f"📤 → Station: clear")
+
+    def send_message(self, text: str, line: int = 1):
+        """Send MSG:<line>:<text> to write arbitrary text directly to the display.
+        line: 0 = top row, 1 = bottom row.
+        Note: the station display truncates text to fit the target row.
+        """
+        message = f"MSG:{line}:{text}\n"
+        self._write(message)
+        print(f"📤 → Station (manual message, line {line}): {text}")
 
 
 async def tcp_station_server(station_output: TcpStationOutput, restart_event: asyncio.Event | None = None):

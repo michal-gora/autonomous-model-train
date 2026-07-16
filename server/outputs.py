@@ -66,6 +66,13 @@ class StationOutput(ABC):
         """Send STATION:clear."""
         ...
 
+    @abstractmethod
+    def send_message(self, text: str, line: int = 1):
+        """Send MSG:<line>:<text> to write arbitrary text directly to the display.
+        line: 0 = top row, 1 = bottom row.
+        """
+        ...
+
 
 class PrintStationOutput(StationOutput):
     """Print-stub: logs commands to console."""
@@ -77,4 +84,7 @@ class PrintStationOutput(StationOutput):
         pass  # State machine already prints
 
     def send_clear(self):
+        pass  # State machine already prints
+
+    def send_message(self, text: str, line: int = 1):
         pass  # State machine already prints
