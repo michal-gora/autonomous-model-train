@@ -121,6 +121,12 @@ def pick_target_train(trains: list, station_names: list) -> int | None:
     in get_incoming_trains). Trains are never excluded just for having been selected
     or tracked before — re-selecting the same train is fine and expected when tracking
     was interrupted and needs to resume.
+
+    The past/future window checks use the current best estimate of departure time
+    (estimated_ms, which includes any known live delay) rather than the original
+    scheduled time (timestamp) — otherwise a delayed train would be wrongly excluded
+    as "in the past" as soon as its original schedule slot passes, even though it
+    hasn't actually departed yet.
     """
     import time
     now_ms = time.time() * 1000
@@ -129,14 +135,15 @@ def pick_target_train(trains: list, station_names: list) -> int | None:
     for t in trains:
         dest = t.get("destination", "")
         timestamp = t.get("timestamp", 0)
+        estimated = t.get("estimated_ms", timestamp)
         number = t.get("number")
 
-        # Only consider trains that haven't already departed
-        if timestamp < now_ms:
-            print(f"   ⏭  Train {number} → {dest}: excluded (in the past, ts={timestamp} < now={now_ms:.0f})")
+        # Only consider trains that haven't already departed (using the delay-adjusted estimate)
+        if estimated < now_ms:
+            print(f"   ⏭  Train {number} → {dest}: excluded (in the past, estimated={estimated} < now={now_ms:.0f})")
             continue
-        if timestamp > max_future_ms:
-            print(f"   ⏭  Train {number} → {dest}: excluded (too far, {(timestamp - now_ms)/60000:.1f} min away)")
+        if estimated > max_future_ms:
+            print(f"   ⏭  Train {number} → {dest}: excluded (too far, {(estimated - now_ms)/60000:.1f} min away)")
             continue
 
         # Westbound: destination is not one of our known stations
