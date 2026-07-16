@@ -108,17 +108,19 @@ async def get_incoming_trains(ws, uic: str, max_trains: int = 100) -> list:
     return trains
 
 
-def pick_target_train(trains: list, station_names: list, exclude_before_ms: float = 0) -> int | None:
-    """Pick first westbound train (destination not in our station list) in the next 30 minutes.
-    
+def pick_target_train(trains: list, station_names: list) -> int | None:
+    """Pick first westbound train (destination not in our station list) in the next 60 minutes.
+
     Args:
         trains:           Timetable list from get_incoming_trains().
         station_names:    List of station names from travel_times.json. Trains whose
                           destination matches one of these are eastbound and skipped.
-        exclude_before_ms: Skip trains whose scheduled timestamp is <= this value.
-                          Pass the scheduled_ms of the last tracked train so stale
-                          timetable entries for already-passed trains are ignored,
-                          even if they still appear as 'upcoming' in the API.
+
+    A train is excluded only for being the wrong direction, outside the 60-minute
+    window, or already departed/cancelled (cancelled trains are filtered out earlier
+    in get_incoming_trains). Trains are never excluded just for having been selected
+    or tracked before — re-selecting the same train is fine and expected when tracking
+    was interrupted and needs to resume.
     """
     import time
     now_ms = time.time() * 1000
@@ -129,12 +131,7 @@ def pick_target_train(trains: list, station_names: list, exclude_before_ms: floa
         timestamp = t.get("timestamp", 0)
         number = t.get("number")
 
-        # Skip trains at or before the last tracked train's scheduled slot
-        if timestamp <= exclude_before_ms:
-            print(f"   ⏭  Train {number} → {dest}: excluded (already tracked, ts={timestamp} <= {exclude_before_ms})")
-            continue
-
-        # Only consider trains departing in the next 60 minutes
+        # Only consider trains that haven't already departed
         if timestamp < now_ms:
             print(f"   ⏭  Train {number} → {dest}: excluded (in the past, ts={timestamp} < now={now_ms:.0f})")
             continue
@@ -441,10 +438,9 @@ async def main():
                             print(f"\n📋 Timetable ({len(trains)} trains):")
                             for t in trains:
                                 marker = "→" if not any(s in t["destination"] for s in station_names) else " "
-                                skip = " (already passed, skipping)" if t["timestamp"] <= last_scheduled_ms else ""
-                                print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}{skip}")
+                                print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}")
 
-                            train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
+                            train_number = pick_target_train(trains, station_names)
                             if not train_number:
                                 print(f"⏳ No suitable train in the next 60 minutes, retrying in 60s...")
                                 _no_data_since = _no_data_since or time.time()

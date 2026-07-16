@@ -383,7 +383,6 @@ async def train_tracker_loop(
     uic: str = fasanenpark["uic"]
     station_names = [s["name"] for s in stations]
     print(f"📍 [Tracker] Fasanenpark UIC: {uic}")
-    last_scheduled_ms: float = 0
 
     # ── Fallback state (survives WebSocket reconnections) ─────────────
     # Cleared only on a genuine full-cycle success; never reset on mere reconnect,
@@ -394,15 +393,6 @@ async def train_tracker_loop(
     # fallback still triggers even if the specific failure reason changes
     # between cycles (no trains → no candidate → aborted train, etc.).
     _no_progress_since: float | None = None
-    # Per-train patience: how long we've been retrying THIS specific train_number.
-    # Kept separate from _no_progress_since, which accumulates across different
-    # trains — reusing it here would mean any train selected after the global
-    # timer already elapsed gets blacklisted after a single 90s no-data timeout,
-    # even brand-new candidates that simply haven't started publishing live GPS
-    # data yet (that data typically doesn't appear until shortly before departure).
-    TRAIN_SKIP_TIMEOUT = 300  # seconds of dedicated retries before giving up on one train
-    _current_train_number: int | None = None
-    _current_train_since: float | None = None
     _fallback_task: asyncio.Task | None = None
     _stop_fallback: asyncio.Event = asyncio.Event()
 
@@ -451,10 +441,9 @@ async def train_tracker_loop(
                         print(f"\n📋 Timetable ({len(trains)} trains):")
                         for t in trains:
                             marker = "→" if not any(s in t["destination"] for s in station_names) else " "
-                            skip = " (skipping)" if t["timestamp"] <= last_scheduled_ms else ""
-                            print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}{skip}")
+                            print(f"   {marker} {t['number']} → {t['destination']} @ {t['time']}")
 
-                        train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
+                        train_number = pick_target_train(trains, station_names)
                         if not train_number:
                             print("⏳ [Tracker] No suitable train in next 60 min, retrying in 60s...")
                             _no_progress_since = _no_progress_since or time.time()
@@ -479,12 +468,6 @@ async def train_tracker_loop(
                         scheduled_ms = next(t["timestamp"] for t in trains if t["number"] == train_number)
                         estimated_ms = next(t["estimated_ms"] for t in trains if t["number"] == train_number)
 
-                        # Reset the per-train patience clock whenever we switch to a
-                        # different train than the one we were previously retrying.
-                        if train_number != _current_train_number:
-                            _current_train_number = train_number
-                            _current_train_since = time.time()
-
                         # Real train found — stop virtual fallback if running.
                         if _fallback_task is not None and not _fallback_task.done():
                             print("🚆 [Tracker] Real train found — stopping virtual train fallback")
@@ -507,10 +490,7 @@ async def train_tracker_loop(
                         )
 
                         if completed:
-                            last_scheduled_ms = scheduled_ms
                             _no_progress_since = None
-                            _current_train_number = None
-                            _current_train_since = None
                             print(f"\n✅ [Tracker] Train {train_number} done — searching next")
                         else:
                             print(f"⚠️  [Tracker] Aborted train {train_number} — will retry")
@@ -525,19 +505,6 @@ async def train_tracker_loop(
                                     virtual_train_for_magnet_mode(
                                         station_to_magnet, stations, target_ref, target_changed,
                                         station_out, _stop_fallback))
-
-                            # Give up on this specific train only after we've spent
-                            # TRAIN_SKIP_TIMEOUT retrying it in particular (not just
-                            # since the last unrelated success) — it keeps getting
-                            # re-selected (last_scheduled_ms never advanced on abort) and
-                            # is preventing us from ever trying a different candidate.
-                            train_stuck_s = time.time() - (_current_train_since or time.time())
-                            if train_stuck_s >= TRAIN_SKIP_TIMEOUT:
-                                print(f"⚠️  [Tracker] No data from train {train_number} for {train_stuck_s:.0f}s "
-                                      f"— skipping it going forward")
-                                last_scheduled_ms = scheduled_ms
-                                _current_train_number = None
-                                _current_train_since = None
 
                 finally:
                     keepalive.cancel()
