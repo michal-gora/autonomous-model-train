@@ -446,7 +446,7 @@ async def main():
 
                             train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                             if not train_number:
-                                print(f"⏳ No suitable train in the next 30 minutes, retrying in 60s...")
+                                print(f"⏳ No suitable train in the next 60 minutes, retrying in 60s...")
                                 _no_data_since = _no_data_since or time.time()
                                 no_data_s = time.time() - _no_data_since
                                 if (_fallback_task is None or _fallback_task.done()) and \

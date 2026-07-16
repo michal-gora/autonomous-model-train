@@ -456,7 +456,7 @@ async def train_tracker_loop(
 
                         train_number = pick_target_train(trains, station_names, exclude_before_ms=last_scheduled_ms)
                         if not train_number:
-                            print("⏳ [Tracker] No suitable train in next 30 min, retrying in 60s...")
+                            print("⏳ [Tracker] No suitable train in next 60 min, retrying in 60s...")
                             _no_progress_since = _no_progress_since or time.time()
                             no_progress_s = time.time() - _no_progress_since
                             if (_fallback_task is None or _fallback_task.done()) and \
