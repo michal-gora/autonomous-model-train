@@ -168,6 +168,9 @@ async def model_tcp_server(
                         now_str = datetime.now().strftime("%H:%M:%S")
                         print(f"[{now_str}] 🧲 HALL received from model")
                         hall_event.set()
+                    elif msg == "PASS":
+                        now_str = datetime.now().strftime("%H:%M:%S")
+                        print(f"[{now_str}] 🧲 PASS received from model (magnet passed, not stopping)")
                     elif msg:
                         print(f"⚠️  Unknown message from model: {msg!r}")
                 except asyncio.TimeoutError:

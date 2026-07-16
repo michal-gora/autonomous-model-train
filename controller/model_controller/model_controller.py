@@ -217,6 +217,12 @@ def start_socket_client():
                     hall_loops_remaining -= 1
                     train_started_at = time.time()
                     print(f"Pass-through, cooldown reset, {hall_loops_remaining} loop(s) remaining")
+                    # Notify the server of this non-stopping pass (does not affect motion)
+                    try:
+                        s.write(b"PASS\n")
+                    except OSError as e:
+                        print(f"Failed to send PASS: {e}")
+                        raise
             
             # Speed control (runs every 10 ms)
             if braking:
