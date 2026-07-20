@@ -141,11 +141,11 @@ def start_socket_client():
 
         # Main communication loop — all timing via plain time.time() integer reads.
         try:
+            global _last_button_press_ms
             # Restart button check (active-LOW, debounced)
             now_ms = time.ticks_ms()
             if (restart_button.value() == 0
                     and time.ticks_diff(now_ms, _last_button_press_ms) > BUTTON_DEBOUNCE_MS):
-                global _last_button_press_ms
                 _last_button_press_ms = now_ms
                 print("Button pressed — sending RESTART")
                 try:
@@ -345,4 +345,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
