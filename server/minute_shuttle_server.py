@@ -41,6 +41,7 @@ async def model_tcp_server(
     model: TcpModelOutput,
     restart_event: asyncio.Event,
     hall_event: asyncio.Event,
+    model_connected_event: asyncio.Event,
 ):
     """TCP server for the model controller. Handles HELLO/PING/HALL."""
 
@@ -65,6 +66,10 @@ async def model_tcp_server(
             model.send_brake_dead_zone(BRAKE_DEAD_ZONE)
             print(f"📤 → Model: BRAKE_DECEL:{BRAKE_DECEL}, BRAKE_DEAD_ZONE:{BRAKE_DEAD_ZONE}")
 
+            # Let the shuttle loop know a real connection now exists so it can
+            # (re)sync its schedule instead of departing into a void.
+            model_connected_event.set()
+
             while True:
                 try:
                     now = asyncio.get_running_loop().time()
@@ -86,6 +91,8 @@ async def model_tcp_server(
                     elif msg == "PASS":
                         now_str = datetime.now().strftime("%H:%M:%S")
                         print(f"[{now_str}] 🧲 PASS received from model (magnet passed, not stopping)")
+                    elif msg == "Slider received!":
+                        print("📤 Slider was received!")
                     elif msg:
                         print(f"⚠️  Unknown message from model: {msg!r}")
                 except asyncio.TimeoutError:
@@ -96,6 +103,7 @@ async def model_tcp_server(
             print(f"❌ Model TCP error: {e}")
         finally:
             model.disconnect()
+            model_connected_event.clear()
             try:
                 writer.close()
             except Exception:
@@ -171,6 +179,7 @@ async def shuttle_loop(
     station_out: TcpStationOutput,
     hall_event: asyncio.Event,
     station_count_ref: list[int],
+    model_connected_event: asyncio.Event,
 ):
     """
     Every SHUTTLE_INTERVAL seconds (on a fixed schedule), advance the model
@@ -180,9 +189,19 @@ async def shuttle_loop(
     HALL sensor confirms arrival.
     """
     loop = asyncio.get_running_loop()
+
+    print("⏳ Waiting for model to connect before starting the shuttle schedule...")
+    await model_connected_event.wait()
     next_departure = loop.time()
 
     while True:
+        # If the model isn't connected, don't waste a departure slot — wait
+        # for it, then anchor the schedule to the moment it (re)connects.
+        if not model_connected_event.is_set():
+            print("⏳ Model disconnected — pausing schedule until it reconnects...")
+            await model_connected_event.wait()
+            next_departure = loop.time()
+
         hall_event.clear()
         model.send_loops(0)
         model.send_speed(DRIVE_SPEED)
@@ -239,9 +258,10 @@ async def main():
     station_out = TcpStationOutput()
     restart_event = asyncio.Event()
     hall_event = asyncio.Event()
+    model_connected_event = asyncio.Event()
     station_count_ref = [0]
 
-    await model_tcp_server(model, restart_event, hall_event)
+    await model_tcp_server(model, restart_event, hall_event, model_connected_event)
     await station_tcp_server(station_out, restart_event)
     print()
 
@@ -249,11 +269,12 @@ async def main():
 
     def status_fn():
         return (f"Interval: {SHUTTLE_INTERVAL}s, Speed: {DRIVE_SPEED}, "
-                f"Stations passed: {station_count_ref[0]}")
+                f"Stations passed: {station_count_ref[0]}, "
+                f"Model connected: {model_connected_event.is_set()}")
 
     stdin_task = asyncio.create_task(stdin_listener(status_fn))
     shuttle_task = asyncio.create_task(shuttle_loop(
-        model, station_out, hall_event, station_count_ref,
+        model, station_out, hall_event, station_count_ref, model_connected_event,
     ))
 
     try:
