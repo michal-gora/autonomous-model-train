@@ -295,6 +295,10 @@ async def _track_one_train(
                 items = [data]
 
             for item in items:
+                if not isinstance(item, dict):
+                    # geops.io buffer messages can include null entries
+                    # (e.g. for deleted/expired trajectories) — skip them.
+                    continue
                 trajectory = item.get("content")
                 if not isinstance(trajectory, dict):
                     continue
