@@ -270,8 +270,8 @@ def start_socket_client():
                     remaining = eta_unix - unix_time()
                     display_eta(remaining)
                     last_eta_display = now
-                elif eta_unix is None:
-                    display_clear(1)  # clear ETA line if no train tracked
+                # elif eta_unix is None:
+                #     display_clear(1)  # clear ETA line if no train tracked
         except OSError as e:
             code = e.args[0]
             if code == errno.ECONNRESET:
